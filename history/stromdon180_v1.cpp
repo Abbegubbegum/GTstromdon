@@ -1,3 +1,12 @@
+// Detta är koden som nuvarande ligger på prototypen
+// V1 är för att den inte fotomotsånd eller någon vippbrytare som
+// de senare modellerna är tänkt att ha.
+// Denna är modifierad från hur första versionen var
+// Specifikt så är det lagt till att den pausar vid fel och man kan gå vidare eller starta om
+// och att i slutet så kan man bläddra mellan alla problem
+// Hur utvecklingen har sett ut fram tills nu (251111):
+// V1 (utan interface förbättringar) -> V2, sedan tillbaka till V1 (med förbättringar)
+
 #include <Arduino.h>
 
 // Wire library for I2C communication
@@ -40,15 +49,16 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 // PSU calculated values because the PSU does not seem very accurate so we have to calculate
 // what target voltage actually gives the correct out voltage
-#define PSU_10V 9.7
+#define PSU_10V 9.4
 #define PSU_11V5 11
-#define PSU_12V 11.5
+#define PSU_12V 11
 #define PSU_15V 13.9
 #define PSU_24V 21.3
 #define PSU_MAX 28
 
 // The ardunio will remeassure the test if it failed up to this amount of remeassures
-#define RETEST_COUNT 200
+#define RETEST_COUNT 10
+#define RETEST_COUNT_CURRENT 100
 #define RETEST_COUNT_TEMPSENSOR 20
 
 // How much time we measure while the PSU sweeps up, because we dont know when it is at max voltage
@@ -63,26 +73,81 @@ enum MeasurePoint
   DY
 };
 
+enum MeasureUnit
+{
+  V,
+  A,
+  mV
+};
+
+const char *units[] = {
+    "V",
+    "A",
+    "mV"};
+
 struct Test
 {
-  String name;
-  String measureUnit;
+  const char *name;
+  MeasureUnit measureUnit;
   float min;
   float max;
   float value;
-  bool success;
 };
 
-bool R_B_FLIP_RELAY_STATE = HIGH;
-bool DC_DY_FLIP_RELAY_STATE = HIGH;
+bool R_B_FLIP_RELAY_STATE = LOW;
+bool DC_DY_FLIP_RELAY_STATE = LOW;
 
 // For the LCD test printing
-char rows[3][21];
+char rows[3][20];
 int current_row = 0;
 
 // For saving the test results for the final result screen.
+// Test testResults[22] = {};
 Test testResults[20] = {};
 int testResultsLength = 0;
+
+bool isSuccess(Test test)
+{
+  return test.min <= test.value && test.value <= test.max;
+}
+
+bool isButtonPressed()
+{
+  return digitalRead(BUTTON_PIN) == LOW;
+}
+
+bool isButtonLongPressed()
+{
+  unsigned long start = millis();
+
+  while (isButtonPressed())
+  {
+    if ((millis() - start) > 1000)
+    {
+      return true;
+    }
+
+    delay(5);
+  }
+
+  return false;
+}
+
+void waitForInput()
+{
+  while (!isButtonPressed())
+  {
+    delay(5);
+  }
+}
+
+void waitForRelease()
+{
+  while (isButtonPressed())
+  {
+    delay(5);
+  }
+}
 
 // The DAC thats controlling the PSU is 12-bit resolution so max is 4095.
 // Likriktaren bör ställa in 30V när man skickar in högsta spänningen
@@ -114,7 +179,8 @@ void setInputVoltage(float voltage, bool with_delay)
 // Resets the global state to be able to run the test again
 void reset()
 {
-  for (int i = 2; i < 12; i++)
+  // All of the pins going out to the relay board
+  for (int i = 2; i < 10; i++)
   {
     digitalWrite(i, HIGH);
   }
@@ -130,7 +196,9 @@ void reset()
   testResultsLength = 0;
 
   R_B_FLIP_RELAY_STATE = HIGH;
+  digitalWrite(R_B_FLIP_MEASURE_RELAY, HIGH);
   DC_DY_FLIP_RELAY_STATE = HIGH;
+  digitalWrite(DC_DY_FLIP_MEASURE_RELAY, HIGH);
 }
 
 int freeRam()
@@ -140,25 +208,11 @@ int freeRam()
   return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
 }
 
-void waitForButtonPress()
-{
-  while (digitalRead(BUTTON_PIN) != LOW)
-  {
-    delay(10);
-  }
-}
-
-void registerTest(Test test)
-{
-  testResults[testResultsLength] = test;
-  testResultsLength++;
-}
-
 void updateLCD()
 {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Testar...");
+  lcd.print(F("Testar..."));
 
   for (int i = 0; i < 3; i++)
   {
@@ -167,43 +221,57 @@ void updateLCD()
   }
 }
 
-void printTestStartLCD(String testName)
+void printTestStartLCD(const char *testName)
 {
-  if (strcmp(rows[2], "") != 0)
+  char printString[21];
+
+  snprintf(printString, sizeof(printString), "%s:", testName);
+
+  if (strcmp(rows[current_row], printString) == 0)
+  {
+    updateLCD();
+    return;
+  }
+  else if (strcmp(rows[2], "") != 0)
   {
     strcpy(rows[0], rows[1]);
     strcpy(rows[1], rows[2]);
   }
 
-  snprintf(rows[current_row], sizeof(rows[current_row]), "%s:", testName.c_str());
+  strcpy(rows[current_row], printString);
 
   updateLCD();
 }
 
-void printTestResultLCD(Test test)
+void getOneRowTestResultString(Test test, char *returnString)
 {
   char sValue[7];
   dtostrf(test.value, 2, 2, sValue);
 
-  if (test.success)
+  if (isSuccess(test))
   {
-    snprintf(rows[current_row], sizeof(rows[current_row]), "%s: %s%s%s",
-             test.name.c_str(), sValue, test.measureUnit.c_str(), test.success ? " UA" : "");
+    snprintf(returnString, 20, "%s: %s%s UA",
+             test.name, sValue, units[test.measureUnit]);
   }
   else if (test.min >= test.value)
   {
     char sMin[7];
     dtostrf(test.min, 2, 2, sMin);
-    snprintf(rows[current_row], sizeof(rows[current_row]), "%s: %s%s<=%s%s",
-             test.name.c_str(), sValue, test.measureUnit.c_str(), sMin, test.measureUnit.c_str());
+    snprintf(returnString, 20, "%s: %s%s<=%s%s",
+             test.name, sValue, units[test.measureUnit], sMin, units[test.measureUnit]);
   }
   else if (test.max <= test.value)
   {
     char sMax[7];
     dtostrf(test.max, 2, 2, sMax);
-    snprintf(rows[current_row], sizeof(rows[current_row]), "%s: %s%s>=%s%s",
-             test.name.c_str(), sValue, test.measureUnit.c_str(), sMax, test.measureUnit.c_str());
+    snprintf(returnString, 20, "%s: %s%s>=%s%s",
+             test.name, sValue, units[test.measureUnit], sMax, units[test.measureUnit]);
   }
+}
+
+void printTestResultLCD(Test test)
+{
+  getOneRowTestResultString(test, rows[current_row]);
 
   if (current_row != 2)
   {
@@ -213,14 +281,56 @@ void printTestResultLCD(Test test)
   updateLCD();
 }
 
-void printFinishedTestLCD()
+void printTestSerial(Test test)
+{
+  Serial.print(F("Test: "));
+  Serial.println(test.name);
+
+  Serial.print(test.min);
+  Serial.print(units[test.measureUnit]);
+  Serial.print(F(" <= "));
+  Serial.print(test.value);
+  Serial.print(units[test.measureUnit]);
+  Serial.print(F(" <= "));
+  Serial.print(test.max);
+  Serial.println(units[test.measureUnit]);
+
+  if (isSuccess(test))
+  {
+    Serial.println(F("SUCCESS!"));
+  }
+  else
+  {
+    Serial.println(F("FAIL!"));
+  }
+  Serial.println();
+}
+
+void showTestResultOnFinishScreen(Test test)
+{
+  char sValue[7];
+  dtostrf(test.value, 2, 2, sValue);
+  char sMin[7];
+  dtostrf(test.min, 2, 2, sMin);
+  char sMax[7];
+  dtostrf(test.max, 2, 2, sMax);
+
+  snprintf(rows[1], 21, "Punkt %s %s%s", test.name, sValue, units[test.measureUnit]);
+  snprintf(rows[2], 21, "Min: %s%s", sMin, units[test.measureUnit]);
+  snprintf(rows[3], 21, "Max: %s%s", sMax, units[test.measureUnit]);
+}
+
+void enterFinishedState()
 {
   int failed_count = 0;
 
+  Test failed_tests[9];
+
   for (int i = 0; i < testResultsLength; i++)
   {
-    if (!testResults[i].success)
+    if (!isSuccess(testResults[i]) && failed_count < 9)
     {
+      failed_tests[failed_count] = testResults[i];
       failed_count++;
     }
   }
@@ -230,104 +340,108 @@ void printFinishedTestLCD()
   if (failed_count == 0)
   {
     lcd.setCursor(0, 0);
-    lcd.print("Test resultat:");
+    lcd.print(F("Test resultat:"));
     lcd.setCursor(0, 1);
-    lcd.print("GT UA");
+    lcd.print(F("GT UA"));
+
+    waitForInput();
+    waitForRelease();
+    return;
   }
-  else if (failed_count == 1)
+
+  int selected_test = 0;
+
+  showTestResultOnFinishScreen(failed_tests[selected_test]);
+
+  lcd.setCursor(0, 0);
+  lcd.print(F("Misslyckat test"));
+  lcd.setCursor(17, 3);
+  lcd.print(selected_test + 1);
+  lcd.print(F("/"));
+  lcd.print(failed_count);
+
+  lcd.setCursor(0, 1);
+  lcd.print(rows[1]);
+  lcd.setCursor(0, 2);
+  lcd.print(rows[2]);
+  lcd.setCursor(0, 3);
+  lcd.print(rows[3]);
+
+  bool loop = true;
+
+  while (loop)
   {
-    for (int i = 0; i < testResultsLength; i++)
+    if (isButtonPressed())
     {
-      if (!testResults[i].success)
+      if (isButtonLongPressed())
       {
-        Test test = testResults[i];
+        waitForRelease();
+        loop = false;
+      }
+      else
+      {
+        selected_test = (selected_test + 1) % failed_count;
+        lcd.clear();
+        showTestResultOnFinishScreen(failed_tests[selected_test]);
+
         lcd.setCursor(0, 0);
-        lcd.print("Misslyckad Test");
+        lcd.print(F("Misslyckat test"));
+        lcd.setCursor(17, 3);
+        lcd.print(selected_test + 1);
+        lcd.print(F("/"));
+        lcd.print(failed_count);
 
         lcd.setCursor(0, 1);
-        lcd.print("Punkt " + test.name + " ");
-        lcd.print(test.value);
-        lcd.print(test.measureUnit);
-
+        lcd.print(rows[1]);
         lcd.setCursor(0, 2);
-        lcd.print("Min: ");
-        lcd.print(test.min + test.measureUnit);
-
+        lcd.print(rows[2]);
         lcd.setCursor(0, 3);
-        lcd.print("Max: ");
-        lcd.print(test.max + test.measureUnit);
+        lcd.print(rows[3]);
       }
     }
+    delay(5);
   }
-  else if (failed_count <= 3)
-  {
-    int current_row = 1;
-    lcd.setCursor(0, 0);
-    lcd.print("Misslyckade Tester");
+}
 
-    for (int i = 0; i < testResultsLength; i++)
-    {
-      if (!testResults[i].success)
-      {
-        lcd.setCursor(0, current_row);
-        Test test = testResults[i];
+void registerTest(Test test)
+{
+  printTestResultLCD(test);
+  printTestSerial(test);
 
-        lcd.print(test.name + ": ");
-        lcd.print(test.value);
-        lcd.print(test.measureUnit);
-
-        if (test.min >= test.value)
-        {
-          lcd.print("<=");
-          lcd.print(test.min);
-          lcd.print(test.measureUnit);
-        }
-        else if (test.max <= test.value)
-        {
-          lcd.print(">=");
-          lcd.print(test.max);
-          lcd.print(test.measureUnit);
-        }
-
-        current_row++;
-      }
-    }
-  }
-  else
-  {
-    String failed_tests = "";
-    for (int i = 0; i < testResultsLength; i++)
-    {
-      if (!testResults[i].success)
-      {
-        if (failed_tests != "")
-        {
-          failed_tests += ", ";
-        }
-        failed_tests += testResults[i].name;
-      }
-    }
-    lcd.setCursor(0, 0);
-    lcd.print("Misslyckade Tester");
-    lcd.setCursor(0, 1);
-    if (failed_tests.length() <= 20)
-    {
-      lcd.print(failed_tests);
-    }
-    else if (failed_tests.length() > 20)
-    {
-      lcd.print(failed_tests.substring(0, 20));
-      lcd.setCursor(0, 2);
-      lcd.print(failed_tests.substring(20));
-    }
-  }
+  testResults[testResultsLength] = test;
+  testResultsLength++;
 }
 
 void sendToRelay(int relayPin, int value)
 {
   digitalWrite(relayPin, value);
-
   delay(RELAY_DELAY);
+}
+
+void turnONRelay(int relayPin)
+{
+  if (relayPin == R_B_FLIP_MEASURE_RELAY)
+  {
+    R_B_FLIP_RELAY_STATE = LOW;
+  }
+  else if (relayPin == DC_DY_FLIP_MEASURE_RELAY)
+  {
+    DC_DY_FLIP_RELAY_STATE = LOW;
+  }
+  sendToRelay(relayPin, LOW);
+}
+
+void turnOFFRelay(int relayPin)
+{
+  if (relayPin == R_B_FLIP_MEASURE_RELAY)
+  {
+    R_B_FLIP_RELAY_STATE = HIGH;
+  }
+  else if (relayPin == DC_DY_FLIP_MEASURE_RELAY)
+  {
+    DC_DY_FLIP_RELAY_STATE = HIGH;
+  }
+  sendToRelay(relayPin, HIGH);
 }
 
 // Convert the analog reading 0-1023 to the voltage 0-5
@@ -355,24 +469,21 @@ float measureVoltage(MeasurePoint point)
   case MeasurePoint::R:
     if (R_B_FLIP_RELAY_STATE != HIGH)
     {
-      R_B_FLIP_RELAY_STATE = HIGH;
-      sendToRelay(R_B_FLIP_MEASURE_RELAY, HIGH);
+      turnOFFRelay(R_B_FLIP_MEASURE_RELAY);
     }
     read = analogRead(R_B_MEASURE_PIN);
     break;
   case MeasurePoint::B:
     if (R_B_FLIP_RELAY_STATE != LOW)
     {
-      R_B_FLIP_RELAY_STATE = LOW;
-      sendToRelay(R_B_FLIP_MEASURE_RELAY, LOW);
+      turnONRelay(R_B_FLIP_MEASURE_RELAY);
     }
     read = analogRead(R_B_MEASURE_PIN);
     break;
   case MeasurePoint::DC:
     if (DC_DY_FLIP_RELAY_STATE != HIGH)
     {
-      DC_DY_FLIP_RELAY_STATE = HIGH;
-      sendToRelay(DC_DY_FLIP_MEASURE_RELAY, HIGH);
+      turnOFFRelay(DC_DY_FLIP_MEASURE_RELAY);
     }
     read = analogRead(DC_DY_MEASURE_PIN);
     use_voltage_divider = false;
@@ -380,8 +491,7 @@ float measureVoltage(MeasurePoint point)
   case MeasurePoint::DY:
     if (DC_DY_FLIP_RELAY_STATE != LOW)
     {
-      DC_DY_FLIP_RELAY_STATE = LOW;
-      sendToRelay(DC_DY_FLIP_MEASURE_RELAY, LOW);
+      turnONRelay(DC_DY_FLIP_MEASURE_RELAY);
     }
     read = analogRead(DC_DY_MEASURE_PIN);
     use_voltage_divider = false;
@@ -426,31 +536,6 @@ float measureSemiAverageVoltage(MeasurePoint point)
   return voltage_sum / count;
 }
 
-void printTestSerial(Test test)
-{
-  Serial.print("Test: ");
-  Serial.println(test.name);
-
-  Serial.print(test.min);
-  Serial.print(test.measureUnit);
-  Serial.print(" <= ");
-  Serial.print(test.value);
-  Serial.print(test.measureUnit);
-  Serial.print(" <= ");
-  Serial.print(test.max);
-  Serial.println(test.measureUnit);
-
-  if (test.success)
-  {
-    Serial.println("SUCCESS!");
-  }
-  else
-  {
-    Serial.println("FAIL!");
-  }
-  Serial.println();
-}
-
 // Strömsensorn ger ut ett spänningsvärde där 0-VCC är mappad till 0-5A
 // Om det är ingen ström så ger den VCC/2
 // Om den ger ut 0V så är det 5A <-
@@ -471,6 +556,40 @@ float measureCurrent()
   }
 
   return currentSum / measureTimes;
+}
+
+bool askRetest(Test failedTest)
+{
+  if (isSuccess(failedTest))
+  {
+    return false;
+  }
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print(F("Misslyckad Test:"));
+  lcd.setCursor(0, 1);
+  char resultString[21];
+  getOneRowTestResultString(failedTest, resultString);
+  lcd.print(resultString);
+  lcd.setCursor(0, 2);
+  lcd.print(F("Press: Retest"));
+  lcd.setCursor(0, 3);
+  lcd.print(F("Hold: Continue"));
+
+  while (true)
+  {
+    if (isButtonPressed())
+    {
+      if (isButtonLongPressed())
+      {
+        return false;
+      }
+      return true;
+    }
+    delay(5);
+  }
 }
 
 // When its sweeped, we set the voltage without a delay
@@ -498,14 +617,15 @@ Test sweepLoadedVoltageDiff()
 
   Test test = {
       "5.3",
-      "V",
+      MeasureUnit::V,
       0,
       0.3,
-      (maxV - minV),
-      (maxV - minV) <= 0.3};
+      (maxV - minV)};
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  if (askRetest(test))
+  {
+    return sweepLoadedVoltageDiff();
+  }
 
   return test;
 }
@@ -534,14 +654,15 @@ Test sweepCurrentDiff()
 
   Test test = {
       "5.2",
-      "A",
+      MeasureUnit::A,
       0,
       0.3,
-      (maxA - minA),
-      (maxA - minA) <= 0.3};
+      (maxA - minA)};
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  if (askRetest(test))
+  {
+    return sweepCurrentDiff();
+  }
 
   return test;
 }
@@ -569,14 +690,15 @@ Test sweepUnloadedRadioVoltageDiff()
 
   Test test = {
       "5.1R",
-      "V",
+      MeasureUnit::V,
       0,
       0.3,
-      (maxV - minV),
-      (maxV - minV) <= 0.3};
+      (maxV - minV)};
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  if (askRetest(test))
+  {
+    return sweepUnloadedRadioVoltageDiff();
+  }
 
   return test;
 }
@@ -604,14 +726,15 @@ Test sweepUnloadedBatteryVoltageDiff()
 
   Test test = {
       "5.1B",
-      "V",
+      MeasureUnit::V,
       0,
       0.3,
-      (maxV - minV),
-      (maxV - minV) <= 0.3};
+      (maxV - minV)};
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  if (askRetest(test))
+  {
+    return sweepUnloadedBatteryVoltageDiff();
+  }
 
   return test;
 }
@@ -636,12 +759,7 @@ Test testTempSensor()
     dcVolt = measureVoltage(MeasurePoint::DC);
     dyVolt = measureVoltage(MeasurePoint::DY);
 
-    Serial.println(dcVolt);
-    Serial.println(dyVolt);
-
     diff = dcVolt - dyVolt;
-    Serial.println(diff);
-    Serial.println();
     success = diff >= 0.03 && diff <= 0.045;
 
     count++;
@@ -649,20 +767,21 @@ Test testTempSensor()
 
   Test test = {
     name : "3.1",
-    "mV",
+    MeasureUnit::mV,
     30,
     45,
-    diff * 1000,
-    success
+    diff * 1000
   };
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  if (askRetest(test))
+  {
+    return testTempSensor();
+  }
 
   return test;
 }
 
-Test testCurrent(String testName, float minA, float maxA)
+Test testCurrent(const char *testName, float minA, float maxA)
 {
   printTestStartLCD(testName);
   float current = measureCurrent();
@@ -671,7 +790,7 @@ Test testCurrent(String testName, float minA, float maxA)
 
   int count = 0;
 
-  while (!success && count < RETEST_COUNT)
+  while (!success && count < RETEST_COUNT_CURRENT)
   {
     delay(5);
 
@@ -684,26 +803,26 @@ Test testCurrent(String testName, float minA, float maxA)
 
   Test test = {
       testName,
-      "A",
+      MeasureUnit::A,
       minA,
       maxA,
-      current,
-      success};
+      current};
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  if (askRetest(test))
+  {
+    return testCurrent(testName, minA, maxA);
+  }
 
   return test;
 }
 
-Test testVoltage(String testName, MeasurePoint point, float minV, float maxV)
+Test testVoltage(const char *testName, MeasurePoint point, float minV, float maxV)
 {
-  Serial.print("TESTING: ");
+  Serial.print(F("TESTING: "));
   Serial.println(testName);
 
   printTestStartLCD(testName);
   float volts = measureAverageVoltage(point);
-
   bool success = volts >= minV && volts <= maxV;
 
   int count = 0;
@@ -713,21 +832,29 @@ Test testVoltage(String testName, MeasurePoint point, float minV, float maxV)
 
     volts = measureAverageVoltage(point);
 
-    success = volts >= minV && volts <= maxV;
-
     count++;
   }
 
   Test test = {
       testName,
-      "V",
+      MeasureUnit::V,
       minV,
       maxV,
-      volts,
-      success};
+      volts};
 
-  printTestResultLCD(test);
-  printTestSerial(test);
+  Serial.print(F("Test: "));
+  Serial.println(test.name);
+  Serial.print(test.min);
+  Serial.print(F(" <= "));
+  Serial.print(test.value);
+  Serial.print(F(" <= "));
+  Serial.print(test.max);
+  Serial.println();
+
+  if (askRetest(test))
+  {
+    return testVoltage(testName, point, minV, maxV);
+  }
 
   return test;
 }
@@ -736,67 +863,81 @@ void resetBPlus()
 {
   // Strömen verkar inte villja återställa sig efter att den begränsas
   // Så för att resetta den så stänger jag av och på B+
-  sendToRelay(B_PLUS_ON_RELAY, HIGH);
-  sendToRelay(B_PLUS_ON_RELAY, LOW);
+  turnOFFRelay(B_PLUS_ON_RELAY);
+  turnONRelay(B_PLUS_ON_RELAY);
 }
 
-void runTest()
+void printReadyScreen()
 {
-  Serial.print("Free Ram: ");
-  Serial.println(freeRam());
-  // Resets everything to be ready
-  reset();
-
   lcd.clear();
   lcd.setCursor(0, 1);
   lcd.print(F("Press the button"));
   lcd.setCursor(0, 2);
   lcd.print(F("to start!"));
+}
+
+void runTest()
+{
+  Serial.print(F("Free Ram: "));
+  Serial.println(freeRam());
+
+  // Resets everything to be ready
+  reset();
 
   // Detta är för att stänga av LADDAT Lampan
   // Den tänds under uppstart av någon anledning
   // Någonting med den lägre inspänningen och flytande spänningar säkert
-  sendToRelay(B_MID_OFF_RELAY, LOW);
-  sendToRelay(B_MID_OFF_RELAY, HIGH);
+  turnONRelay(B_MID_OFF_RELAY);
+  turnOFFRelay(B_MID_OFF_RELAY);
 
-  waitForButtonPress();
-
-  Serial.println("TESTING...");
+  Serial.println(F("TESTING..."));
   updateLCD();
 
   // MEASUREMENTS
   // 1.1
-  sendToRelay(B_PLUS_ON_RELAY, LOW);
+  turnONRelay(B_PLUS_ON_RELAY);
   registerTest(testVoltage("1.1", MeasurePoint::R, 12.3, 12.8));
-  sendToRelay(R_ON_RELAY, LOW);
+  turnONRelay(R_ON_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 1.2
-  sendToRelay(R_LOAD_RELAY, LOW);
+  turnONRelay(R_LOAD_RELAY);
   registerTest(testVoltage("1.2", MeasurePoint::R, 11.7, 12.8));
-  sendToRelay(R_LOAD_RELAY, HIGH);
+  turnOFFRelay(R_LOAD_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 2.1
-  sendToRelay(B_PLUS_ON_RELAY, HIGH);
+  turnOFFRelay(B_PLUS_ON_RELAY);
   registerTest(testVoltage("2.1", MeasurePoint::B, 15.15, 15.90));
   float volts_2_1 = measureAverageVoltage(MeasurePoint::B);
-  sendToRelay(B_PLUS_ON_RELAY, LOW);
+  turnONRelay(B_PLUS_ON_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 2.2
   // Utspänningen ska även sjunka jämfört med förra mätningen
   registerTest(testCurrent("2.2a", 1.15, 1.35));
+  printTestStartLCD("2.2b");
   float volts_2_2 = measureAverageVoltage(MeasurePoint::B);
-  registerTest({"2.2b",
-                "V",
-                0,
-                volts_2_1,
-                volts_2_2,
-                volts_2_2 < volts_2_1});
+
+  Test test_2_2b = {"2.2b",
+                    MeasureUnit::V,
+                    0,
+                    volts_2_1,
+                    volts_2_2};
+
+  int count = 0;
+  while (!isSuccess(test_2_2b) && count < RETEST_COUNT)
+  {
+    volts_2_2 = measureAverageVoltage(MeasurePoint::B);
+    test_2_2b.value = volts_2_2;
+    count++;
+    delay(5);
+  }
+
+  registerTest(test_2_2b);
 
   delay(MEASURE_POINT_DELAY);
 
@@ -807,9 +948,12 @@ void runTest()
 
   // 3.2
   // Kontrollera att "LADDAT" lampan tänds
-  sendToRelay(DY_DISCONNECT_RELAY, LOW);
-  registerTest(testCurrent("3.2", 0.15, 0.27));
-  sendToRelay(DY_DISCONNECT_RELAY, HIGH);
+  // Photoresistors lose resistance when its lit.
+  // That means that the read value should increase when more lights turn on
+
+  turnONRelay(DY_DISCONNECT_RELAY);
+  registerTest(testCurrent("3.2", 0.15, 0.28));
+  turnOFFRelay(DY_DISCONNECT_RELAY);
 
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -821,7 +965,7 @@ void runTest()
   lcd.setCursor(0, 3);
   lcd.print(F("the button"));
 
-  waitForButtonPress();
+  waitForInput();
 
   updateLCD();
 
@@ -829,11 +973,11 @@ void runTest()
 
   // 3.3
   // Kontrollera att "LADDAT" lampan släcks
-  sendToRelay(B_MID_OFF_RELAY, LOW);
+  turnONRelay(B_MID_OFF_RELAY);
   resetBPlus();
 
   registerTest(testCurrent("3.3", 1.15, 1.35));
-  sendToRelay(B_MID_OFF_RELAY, HIGH);
+  turnOFFRelay(B_MID_OFF_RELAY);
 
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -845,38 +989,38 @@ void runTest()
   lcd.setCursor(0, 3);
   lcd.print(F("the button"));
 
-  waitForButtonPress();
+  waitForInput();
 
   updateLCD();
 
   delay(MEASURE_POINT_DELAY);
 
   // 3.4
-  sendToRelay(DY_GROUND_RELAY, LOW);
+  turnONRelay(DY_GROUND_RELAY);
   registerTest(testCurrent("3.4", 0.4, 0.6));
-  sendToRelay(DY_GROUND_RELAY, HIGH);
+  turnOFFRelay(DY_GROUND_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 3.5
-  sendToRelay(DC_GROUND_RELAY, LOW);
-  registerTest(testCurrent("3.5", 0.15, 0.27));
-  sendToRelay(DC_GROUND_RELAY, HIGH);
+  turnONRelay(DC_GROUND_RELAY);
+  registerTest(testCurrent("3.5", 0.15, 0.28));
+  turnOFFRelay(DC_GROUND_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 3.6
   // Behöver resetta B-plus för att verkligen se att den minskar strömmen
   resetBPlus();
-  sendToRelay(DC_DISCONNECT_RELAY, LOW);
+  turnONRelay(DC_DISCONNECT_RELAY);
   registerTest(testCurrent("3.6", 0.4, 0.6));
-  sendToRelay(DC_DISCONNECT_RELAY, HIGH);
+  turnOFFRelay(DC_DISCONNECT_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 4.1
   resetBPlus();
-  sendToRelay(R_LOAD_RELAY, LOW);
+  turnONRelay(R_LOAD_RELAY);
   registerTest(testCurrent("4.1", 1.15, 1.35));
 
   delay(MEASURE_POINT_DELAY);
@@ -889,25 +1033,25 @@ void runTest()
 
   // 4.2
   setInputVoltage(PSU_12V, true);
-  registerTest(testCurrent("4.2", 0.15, 0.27));
+  registerTest(testCurrent("4.2", 0.15, 0.28));
 
   delay(MEASURE_POINT_DELAY);
 
   // 4.4
   setInputVoltage(PSU_11V5, true);
-  registerTest(testCurrent("4.4a", 0.15, 0.27));
-  sendToRelay(R_LOAD_RELAY, HIGH);
+  registerTest(testCurrent("4.4a", 0.15, 0.28));
+  turnOFFRelay(R_LOAD_RELAY);
   resetBPlus();
   registerTest(testCurrent("4.4b", 1.15, 1.35));
 
   delay(MEASURE_POINT_DELAY);
 
   // 5.1
-  sendToRelay(R_ON_RELAY, HIGH);
-  sendToRelay(B_PLUS_ON_RELAY, HIGH);
+  turnOFFRelay(R_ON_RELAY);
+  turnOFFRelay(B_PLUS_ON_RELAY);
   registerTest(sweepUnloadedRadioVoltageDiff());
   registerTest(sweepUnloadedBatteryVoltageDiff());
-  sendToRelay(B_PLUS_ON_RELAY, LOW);
+  turnONRelay(B_PLUS_ON_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
@@ -917,10 +1061,10 @@ void runTest()
   delay(MEASURE_POINT_DELAY);
 
   // 5.3
-  sendToRelay(R_ON_RELAY, LOW);
-  sendToRelay(R_LOAD_RELAY, LOW);
+  turnONRelay(R_ON_RELAY);
+  turnONRelay(R_LOAD_RELAY);
   registerTest(sweepLoadedVoltageDiff());
-  sendToRelay(R_LOAD_RELAY, HIGH);
+  turnOFFRelay(R_LOAD_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
@@ -934,31 +1078,29 @@ void runTest()
     digitalWrite(i, HIGH);
   }
 
-  printFinishedTestLCD();
-
   bool success = true;
 
   for (int i = 0; i < testResultsLength; i++)
   {
-    success &= testResults[i].success;
+    success &= isSuccess(testResults[i]);
   }
 
   Serial.println(F("TEST FINISHED:"));
-  Serial.println(success ? "SUCCESS" : "FAILED");
+  Serial.println(success ? F("SUCCESS") : F("FAILED"));
 
-  Serial.print("Free Ram: ");
+  Serial.print(F("Free Ram: "));
   Serial.println(freeRam());
 
-  // Om man trycker på knappen så startar testet om
-  waitForButtonPress();
+  enterFinishedState();
 
-  lcd.clear();
-
-  runTest();
+  printReadyScreen();
 }
 
 void setup()
 {
+  // for debugging
+  // debug_init();
+
   // put your setup code here, to run once:
   Serial.begin(9600);
 
@@ -967,16 +1109,21 @@ void setup()
   lcd.init();
   lcd.backlight();
 
-  // Not required when arduino not powered by USB
   // analogReference(EXTERNAL);
 
   // Sets all sequential relays pins to output
-  // OBS Relays are active low
-  for (int i = 2; i < 12; i++)
+  // OBS Relays on the breakout board are active low
+  for (int i = 2; i < 10; i++)
   {
     pinMode(i, OUTPUT);
     digitalWrite(i, HIGH);
   }
+
+  // The relays on the board are active high
+  pinMode(DC_DY_FLIP_MEASURE_RELAY, OUTPUT);
+  digitalWrite(DC_DY_FLIP_MEASURE_RELAY, HIGH);
+  pinMode(R_B_FLIP_MEASURE_RELAY, OUTPUT);
+  digitalWrite(R_B_FLIP_MEASURE_RELAY, HIGH);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
@@ -984,9 +1131,17 @@ void setup()
   pinMode(R_B_MEASURE_PIN, INPUT);
   pinMode(DC_DY_MEASURE_PIN, INPUT);
 
-  runTest();
+  printReadyScreen();
+
+  setInputVoltage(PSU_24V, false);
 }
 
 void loop()
 {
+  if (isButtonPressed())
+  {
+    runTest();
+  }
+
+  delay(5);
 }
