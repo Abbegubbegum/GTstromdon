@@ -1,11 +1,9 @@
-// Detta är koden som nuvarande ligger på prototypen
-// V1 är för att den inte fotomotsånd eller någon vippbrytare som
-// de senare modellerna är tänkt att ha.
-// Denna är modifierad från hur första versionen var
-// Specifikt så är det lagt till att den pausar vid fel och man kan gå vidare eller starta om
-// och att i slutet så kan man bläddra mellan alla problem
-// Hur utvecklingen har sett ut fram tills nu (251111):
-// V1 (utan interface förbättringar) -> V2, sedan tillbaka till V1 (med förbättringar)
+// V2
+// Nuvarande (251111) så är detta en gammal version av mjukvaran
+// modifierad för V0.2 av kortet
+// stora skillnader är reläerna på kortet, fotomotstånd och vippbrytare istället för en knapp
+// Bäst är att uppdatera detta först till att likna hur den nya
+// V1 mjukvaran ser ut, innan denna slipas up
 
 #include <Arduino.h>
 
@@ -33,13 +31,15 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 #define DY_DISCONNECT_RELAY 3
 #define DY_GROUND_RELAY 2
 // DY_GROUND_RELAY is relay nr 1 on the relay board in the schematic
-#define R_B_FLIP_MEASURE_RELAY 10
-#define DC_DY_FLIP_MEASURE_RELAY 11
-#define BUTTON_PIN 13
+#define R_B_FLIP_MEASURE_RELAY 11
+#define DC_DY_FLIP_MEASURE_RELAY 10
+#define SWITCH_UP_PIN 12
+#define SWITCH_DOWN_PIN 13
 
-#define CURRENT_MEASURE_PIN A0
-#define R_B_MEASURE_PIN A1
-#define DC_DY_MEASURE_PIN A2
+#define PHOTORESISTOR_PIN A0
+#define CURRENT_MEASURE_PIN A1
+#define R_B_MEASURE_PIN A2
+#define DC_DY_MEASURE_PIN A3
 
 // The delay after triggering the relay, as i noticed the relays are too slow
 #define RELAY_DELAY 30
@@ -102,25 +102,56 @@ char rows[3][20];
 int current_row = 0;
 
 // For saving the test results for the final result screen.
-// Test testResults[22] = {};
 Test testResults[20] = {};
 int testResultsLength = 0;
+
+void sendToRelay(int relayPin, int value)
+{
+  digitalWrite(relayPin, value);
+  delay(RELAY_DELAY);
+}
+
+void turnONRelay(int relayPin)
+{
+  if (relayPin == R_B_FLIP_MEASURE_RELAY)
+  {
+    R_B_FLIP_RELAY_STATE = HIGH;
+  }
+  else if (relayPin == DC_DY_FLIP_MEASURE_RELAY)
+  {
+    DC_DY_FLIP_RELAY_STATE = HIGH;
+  }
+  sendToRelay(relayPin, LOW);
+}
+
+void turnOFFRelay(int relayPin)
+{
+  if (relayPin == R_B_FLIP_MEASURE_RELAY)
+  {
+    R_B_FLIP_RELAY_STATE = LOW;
+  }
+  else if (relayPin == DC_DY_FLIP_MEASURE_RELAY)
+  {
+    DC_DY_FLIP_RELAY_STATE = LOW;
+  }
+  sendToRelay(relayPin, HIGH);
+}
 
 bool isSuccess(Test test)
 {
   return test.min <= test.value && test.value <= test.max;
 }
 
-bool isButtonPressed()
+bool isUpPressed()
 {
-  return digitalRead(BUTTON_PIN) == LOW;
+  return digitalRead(SWITCH_UP_PIN) == LOW;
 }
 
-bool isButtonLongPressed()
+bool isUpLongPressed()
 {
   unsigned long start = millis();
 
-  while (isButtonPressed())
+  while (isUpPressed())
   {
     if ((millis() - start) > 1000)
     {
@@ -133,9 +164,36 @@ bool isButtonLongPressed()
   return false;
 }
 
+bool isDownPressed()
+{
+  return digitalRead(SWITCH_DOWN_PIN) == LOW;
+}
+
+bool isDownLongPressed()
+{
+  unsigned long start = millis();
+
+  while (isDownPressed())
+  {
+    if ((millis() - start) > 1000)
+    {
+      return true;
+    }
+
+    delay(5);
+  }
+
+  return false;
+}
+
+bool isAnyPressed()
+{
+  return isUpPressed() || isDownPressed();
+}
+
 void waitForInput()
 {
-  while (!isButtonPressed())
+  while (!isAnyPressed())
   {
     delay(5);
   }
@@ -143,7 +201,7 @@ void waitForInput()
 
 void waitForRelease()
 {
-  while (isButtonPressed())
+  while (isAnyPressed())
   {
     delay(5);
   }
@@ -179,10 +237,10 @@ void setInputVoltage(float voltage, bool with_delay)
 // Resets the global state to be able to run the test again
 void reset()
 {
-  // All of the pins going out to the relay board
-  for (int i = 2; i < 10; i++)
+  // All of the pins going out to relays
+  for (int i = 2; i < 12; i++)
   {
-    digitalWrite(i, HIGH);
+    turnOFFRelay(i);
   }
 
   setInputVoltage(PSU_24V, true);
@@ -195,17 +253,15 @@ void reset()
 
   testResultsLength = 0;
 
-  R_B_FLIP_RELAY_STATE = HIGH;
-  digitalWrite(R_B_FLIP_MEASURE_RELAY, HIGH);
-  DC_DY_FLIP_RELAY_STATE = HIGH;
-  digitalWrite(DC_DY_FLIP_MEASURE_RELAY, HIGH);
+  R_B_FLIP_RELAY_STATE = LOW;
+  DC_DY_FLIP_RELAY_STATE = LOW;
 }
 
 void updateLCD()
 {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print(F("Testar..."));
+  lcd.print("Testar...");
 
   for (int i = 0; i < 3; i++)
   {
@@ -214,15 +270,14 @@ void updateLCD()
   }
 }
 
-void printTestStartLCD(const char *testName)
+void printTestStartLCD(String testName)
 {
   char printString[21];
 
-  snprintf(printString, sizeof(printString), "%s:", testName);
+  snprintf(printString, sizeof(printString), "%s:", testName.c_str());
 
-  if (strcmp(rows[current_row], printString) == 0)
+  if (strcmp(rows[current_row], printString) != 0)
   {
-    updateLCD();
     return;
   }
   else if (strcmp(rows[2], "") != 0)
@@ -231,7 +286,7 @@ void printTestStartLCD(const char *testName)
     strcpy(rows[1], rows[2]);
   }
 
-  strcpy(rows[current_row], printString);
+  strcpy(printString, rows[current_row]);
 
   updateLCD();
 }
@@ -360,39 +415,45 @@ void enterFinishedState()
   lcd.setCursor(0, 3);
   lcd.print(rows[3]);
 
-  bool loop = true;
-
-  while (loop)
+  while (true)
   {
-    if (isButtonPressed())
+    if (!isAnyPressed())
     {
-      if (isButtonLongPressed())
-      {
-        waitForRelease();
-        loop = false;
-      }
-      else
-      {
-        selected_test = (selected_test + 1) % failed_count;
-        lcd.clear();
-        showTestResultOnFinishScreen(failed_tests[selected_test]);
-
-        lcd.setCursor(0, 0);
-        lcd.print(F("Misslyckat test"));
-        lcd.setCursor(17, 3);
-        lcd.print(selected_test + 1);
-        lcd.print(F("/"));
-        lcd.print(failed_count);
-
-        lcd.setCursor(0, 1);
-        lcd.print(rows[1]);
-        lcd.setCursor(0, 2);
-        lcd.print(rows[2]);
-        lcd.setCursor(0, 3);
-        lcd.print(rows[3]);
-      }
+      delay(5);
+      continue;
     }
-    delay(5);
+
+    if (isDownPressed())
+    {
+      if (isDownLongPressed())
+      {
+        lcd.clear();
+        waitForRelease();
+        break;
+      }
+      selected_test = (selected_test + 1) % failed_count;
+    }
+    else if (isUpPressed())
+    {
+      selected_test = (selected_test - 1 + failed_count) % failed_count;
+    }
+
+    lcd.clear();
+    showTestResultOnFinishScreen(failed_tests[selected_test]);
+
+    lcd.setCursor(0, 0);
+    lcd.print(F("Misslyckat test"));
+    lcd.setCursor(17, 3);
+    lcd.print(selected_test + 1);
+    lcd.print(F("/"));
+    lcd.print(failed_count);
+
+    lcd.setCursor(0, 1);
+    lcd.print(rows[1]);
+    lcd.setCursor(0, 2);
+    lcd.print(rows[2]);
+    lcd.setCursor(0, 3);
+    lcd.print(rows[3]);
   }
 }
 
@@ -403,38 +464,6 @@ void registerTest(Test test)
 
   testResults[testResultsLength] = test;
   testResultsLength++;
-}
-
-void sendToRelay(int relayPin, int value)
-{
-  digitalWrite(relayPin, value);
-  delay(RELAY_DELAY);
-}
-
-void turnONRelay(int relayPin)
-{
-  if (relayPin == R_B_FLIP_MEASURE_RELAY)
-  {
-    R_B_FLIP_RELAY_STATE = LOW;
-  }
-  else if (relayPin == DC_DY_FLIP_MEASURE_RELAY)
-  {
-    DC_DY_FLIP_RELAY_STATE = LOW;
-  }
-  sendToRelay(relayPin, LOW);
-}
-
-void turnOFFRelay(int relayPin)
-{
-  if (relayPin == R_B_FLIP_MEASURE_RELAY)
-  {
-    R_B_FLIP_RELAY_STATE = HIGH;
-  }
-  else if (relayPin == DC_DY_FLIP_MEASURE_RELAY)
-  {
-    DC_DY_FLIP_RELAY_STATE = HIGH;
-  }
-  sendToRelay(relayPin, HIGH);
 }
 
 // Convert the analog reading 0-1023 to the voltage 0-5
@@ -567,22 +596,27 @@ bool askRetest(Test failedTest)
   getOneRowTestResultString(failedTest, resultString);
   lcd.print(resultString);
   lcd.setCursor(0, 2);
-  lcd.print(F("Press: Retest"));
+  lcd.print(F("Up: Retest"));
   lcd.setCursor(0, 3);
-  lcd.print(F("Hold: Continue"));
+  lcd.print(F("Down: Continue"));
 
   while (true)
   {
-    if (isButtonPressed())
+    if (isUpPressed())
     {
-      if (isButtonLongPressed())
-      {
-        return false;
-      }
       return true;
+    }
+    else if (isDownPressed())
+    {
+      return false;
     }
     delay(5);
   }
+}
+
+float getPhotoReading()
+{
+  return convertReadToVoltage(analogRead(PHOTORESISTOR_PIN));
 }
 
 // When its sweeped, we set the voltage without a delay
@@ -852,6 +886,48 @@ Test testVoltage(const char *testName, MeasurePoint point, float minV, float max
   return test;
 }
 
+Test testChargingLampOn(float initialReading)
+{
+  printTestStartLCD("3.2b");
+
+  float newReading = getPhotoReading();
+
+  Test test = {
+      "3.2b",
+      MeasureUnit::V,
+      initialReading + 0.1,
+      5.0,
+      newReading};
+
+  if (askRetest(test))
+  {
+    return testChargingLampOn(initialReading);
+  }
+
+  return test;
+}
+
+Test testChargingLampOff(float initialReading)
+{
+  printTestStartLCD("3.3b");
+
+  float newReading = getPhotoReading();
+
+  Test test = {
+      "3.3b",
+      MeasureUnit::V,
+      0,
+      initialReading - 0.1,
+      newReading};
+
+  if (askRetest(test))
+  {
+    return testChargingLampOff(initialReading);
+  }
+
+  return test;
+}
+
 void resetBPlus()
 {
   // Strömen verkar inte villja återställa sig efter att den begränsas
@@ -940,48 +1016,25 @@ void runTest()
   // Kontrollera att "LADDAT" lampan tänds
   // Photoresistors lose resistance when its lit.
   // That means that the read value should increase when more lights turn on
+  float photoResistorStart = getPhotoReading();
 
   turnONRelay(DY_DISCONNECT_RELAY);
   registerTest(testCurrent("3.2", 0.15, 0.28));
   turnOFFRelay(DY_DISCONNECT_RELAY);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Kontrollera att"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("LADDAT lampan lyser"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("To continue press"));
-  lcd.setCursor(0, 3);
-  lcd.print(F("the button"));
-
-  waitForInput();
-
-  updateLCD();
+  registerTest(testChargingLampOn(photoResistorStart));
 
   delay(MEASURE_POINT_DELAY);
 
   // 3.3
-  // Kontrollera att "LADDAT" lampan släcks
+  photoResistorStart = getPhotoReading();
   turnONRelay(B_MID_OFF_RELAY);
   resetBPlus();
 
   registerTest(testCurrent("3.3", 1.15, 1.35));
   turnOFFRelay(B_MID_OFF_RELAY);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Kolla att LADDAT"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("lampan inte lyser"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("To continue press"));
-  lcd.setCursor(0, 3);
-  lcd.print(F("the button"));
-
-  waitForInput();
-
-  updateLCD();
+  registerTest(testChargingLampOff(photoResistorStart));
 
   delay(MEASURE_POINT_DELAY);
 
@@ -1100,19 +1153,16 @@ void setup()
 
   // Sets all sequential relays pins to output
   // OBS Relays on the breakout board are active low
-  for (int i = 2; i < 10; i++)
+  for (int i = 2; i < 12; i++)
   {
     pinMode(i, OUTPUT);
-    digitalWrite(i, HIGH);
+    turnOFFRelay(i);
   }
 
-  // The relays on the board are active high
-  pinMode(DC_DY_FLIP_MEASURE_RELAY, OUTPUT);
-  digitalWrite(DC_DY_FLIP_MEASURE_RELAY, HIGH);
-  pinMode(R_B_FLIP_MEASURE_RELAY, OUTPUT);
-  digitalWrite(R_B_FLIP_MEASURE_RELAY, HIGH);
+  turnONRelay(4);
 
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(SWITCH_UP_PIN, INPUT_PULLUP);
+  pinMode(SWITCH_DOWN_PIN, INPUT_PULLUP);
 
   pinMode(CURRENT_MEASURE_PIN, INPUT);
   pinMode(R_B_MEASURE_PIN, INPUT);
@@ -1125,7 +1175,7 @@ void setup()
 
 void loop()
 {
-  if (isButtonPressed())
+  if (isAnyPressed())
   {
     runTest();
   }
