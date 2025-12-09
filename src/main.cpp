@@ -211,8 +211,8 @@ float measureVoltage(MeasurePoint point)
   // Two resistors forming the voltage divider
   // Currently set to 0-18V mapped to 0-5V
   // VCC - R1 - Read - R2 - GND
-  int R1 = 9900;
-  int R2 = 2700;
+  int R1 = 10000;
+  int R2 = 3300;
 
   bool use_voltage_divider = true;
 
@@ -259,26 +259,22 @@ float measureVoltage(MeasurePoint point)
   return (voltage * (R1 + R2)) / R2;
 }
 
-// Strömsensorn ger ut ett spänningsvärde där 0-VCC är mappad till 0-5A
+// Strömsensorn ger ut ett spänningsvärde med 185mV/A
 // Om det är ingen ström så ger den VCC/2
-// Om den ger ut 0V så är det 5A <-
-// Om den ger ut VCC så är det 5A ->
-// The current sensor seems to measure only 4.13V when 5A are meassured i.e only 1.63V+- 2.5V
-// So i adjust in software
 // It was very jumpy and not stable so i take the average of multiple readings
 float measureCurrent()
 {
-  int measureTimes = 50;
+  int measureTimes = 200;
   float currentSum = 0.0;
 
   for (int i = 0; i < measureTimes; i++)
   {
     float reading = convertReadToVoltage(analogRead(CURRENT_MEASURE_PIN));
 
-    currentSum += (abs(reading - 2.5) / 1.63) * 5;
+    currentSum += abs(reading - 2.5) / 0.185;
   }
 
-  return currentSum / measureTimes;
+  return (currentSum / measureTimes);
 }
 
 bool askRetest(Test failedTest)
@@ -305,6 +301,7 @@ bool askRetest(Test failedTest)
   {
     if (isUpPressed())
     {
+      updateLCD();
       return true;
     }
     else if (isDownPressed())
@@ -409,7 +406,7 @@ void runTest()
 
   // 2.2
   // Utspänningen ska även sjunka jämfört med förra mätningen
-  registerTest(testCurrent("2.2a", 1.15, 1.35));
+  registerTest(testCurrent("2.2a", 1.10, 1.35));
   printTestStartLCD("2.2b");
   float volts_2_2 = measureAverageVoltage(MeasurePoint::B);
 
@@ -444,7 +441,7 @@ void runTest()
   float photoResistorStart = getPhotoReading();
 
   turnONRelay(DY_DISCONNECT_RELAY);
-  registerTest(testCurrent("3.2", 0.15, 0.28));
+  registerTest(testCurrent("3.2", 0.15, 0.43));
   turnOFFRelay(DY_DISCONNECT_RELAY);
 
   registerTest(testChargingLampOn(photoResistorStart));
@@ -456,7 +453,7 @@ void runTest()
   turnONRelay(B_MID_OFF_RELAY);
   resetBPlus();
 
-  registerTest(testCurrent("3.3", 1.15, 1.35));
+  registerTest(testCurrent("3.3", 1.10, 1.35));
   turnOFFRelay(B_MID_OFF_RELAY);
 
   registerTest(testChargingLampOff(photoResistorStart));
@@ -465,14 +462,14 @@ void runTest()
 
   // 3.4
   turnONRelay(DY_GROUND_RELAY);
-  registerTest(testCurrent("3.4", 0.4, 0.6));
+  registerTest(testCurrent("3.4", 0.4, 0.75));
   turnOFFRelay(DY_GROUND_RELAY);
 
   delay(MEASURE_POINT_DELAY);
 
   // 3.5
   turnONRelay(DC_GROUND_RELAY);
-  registerTest(testCurrent("3.5", 0.15, 0.28));
+  registerTest(testCurrent("3.5", 0.15, 0.43));
   turnOFFRelay(DC_GROUND_RELAY);
 
   delay(MEASURE_POINT_DELAY);
@@ -481,7 +478,7 @@ void runTest()
   // Behöver resetta B-plus för att verkligen se att den minskar strömmen
   resetBPlus();
   turnONRelay(DC_DISCONNECT_RELAY);
-  registerTest(testCurrent("3.6", 0.4, 0.6));
+  registerTest(testCurrent("3.6", 0.4, 0.75));
   turnOFFRelay(DC_DISCONNECT_RELAY);
 
   delay(MEASURE_POINT_DELAY);
@@ -489,28 +486,28 @@ void runTest()
   // 4.1
   resetBPlus();
   turnONRelay(R_LOAD_RELAY);
-  registerTest(testCurrent("4.1", 1.15, 1.35));
+  registerTest(testCurrent("4.1", 1.10, 1.35));
 
   delay(MEASURE_POINT_DELAY);
 
   // 4.3
   setInputVoltage(PSU_15V, true);
-  registerTest(testCurrent("4.3", 1.15, 1.35));
+  registerTest(testCurrent("4.3", 1.10, 1.35));
 
   delay(MEASURE_POINT_DELAY);
 
   // 4.2
   setInputVoltage(PSU_12V, true);
-  registerTest(testCurrent("4.2", 0.15, 0.28));
+  registerTest(testCurrent("4.2", 0.15, 0.43));
 
   delay(MEASURE_POINT_DELAY);
 
   // 4.4
   setInputVoltage(PSU_11V5, true);
-  registerTest(testCurrent("4.4a", 0.15, 0.28));
+  registerTest(testCurrent("4.4a", 0.15, 0.43));
   turnOFFRelay(R_LOAD_RELAY);
   resetBPlus();
-  registerTest(testCurrent("4.4b", 1.15, 1.35));
+  registerTest(testCurrent("4.4b", 1.10, 1.35));
 
   delay(MEASURE_POINT_DELAY);
 
