@@ -1,13 +1,8 @@
 // Detta är koden som nuvarande ligger på prototypen
 // V1 är för att den inte fotomotsånd eller någon vippbrytare som
 // de senare modellerna är tänkt att ha.
-// Denna är modifierad från hur första versionen var
-// Specifikt så är det lagt till att den pausar vid fel och man kan gå vidare eller starta om
-// och att i slutet så kan man bläddra mellan alla problem
-// Hur utvecklingen har sett ut fram tills nu (251111):
-// V1 (utan interface förbättringar) -> V2, sedan tillbaka till V1 (med förbättringar)
 
-#include <common.cpp>
+#include <common.h>
 
 // R_ON_RELAY is relay nr 8 on the relay board in the schematic
 #define R_ON_RELAY 9

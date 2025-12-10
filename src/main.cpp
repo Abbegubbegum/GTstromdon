@@ -1,9 +1,6 @@
 // V2
-// Nuvarande (251111) så är detta en gammal version av mjukvaran
 // modifierad för V0.2 av kortet
 // stora skillnader är reläerna på kortet, fotomotstånd och vippbrytare istället för en knapp
-// Bäst är att uppdatera detta först till att likna hur den nya
-// V1 mjukvaran ser ut, innan denna slipas up
 
 #include <common.h>
 
