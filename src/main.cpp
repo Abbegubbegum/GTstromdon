@@ -314,43 +314,69 @@ float getPhotoReading()
   return convertReadToVoltage(analogRead(PHOTORESISTOR_PIN));
 }
 
-Test testChargingLampOn(float initialReading)
+Test testChargedLampOn(float initialReading)
 {
-  printTestStartLCD("3.2b");
+  printTestStartLCD("LADDAT ON");
 
   float newReading = getPhotoReading();
 
   Test test = {
-      "3.2b",
+      "LADDAT ON",
       MeasureUnit::V,
       initialReading + 0.1,
       5.0,
       newReading};
 
+  if (!isSuccess(test))
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Misslyckad test:"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("LADDAT LAMPAN"));
+    lcd.setCursor(0, 2);
+    lcd.print(F("NOT ON"));
+    waitForInput();
+    waitForRelease();
+  }
+
   if (askRetest(test))
   {
-    return testChargingLampOn(initialReading);
+    return testChargedLampOn(initialReading);
   }
 
   return test;
 }
 
-Test testChargingLampOff(float initialReading)
+Test testChargedLampOff(float initialReading)
 {
-  printTestStartLCD("3.3b");
+  printTestStartLCD("LADDAT OFF");
 
   float newReading = getPhotoReading();
 
   Test test = {
-      "3.3b",
+      "LADDAT OFF",
       MeasureUnit::V,
       0,
       initialReading - 0.1,
       newReading};
 
+  if (!isSuccess(test))
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Misslyckad test:"));
+    lcd.setCursor(0, 1);
+    lcd.print(F("LADDAT LAMPAN"));
+    lcd.setCursor(0, 2);
+    lcd.print(F("NOT OFF"));
+    waitForInput();
+    waitForRelease();
+  }
+
   if (askRetest(test))
   {
-    return testChargingLampOff(initialReading);
+    return testChargedLampOff(initialReading);
   }
 
   return test;
@@ -441,7 +467,7 @@ void runTest()
   registerTest(testCurrent("3.2", 0.15, 0.43));
   turnOFFRelay(DY_DISCONNECT_RELAY);
 
-  registerTest(testChargingLampOn(photoResistorStart));
+  registerTest(testChargedLampOn(photoResistorStart));
 
   delay(MEASURE_POINT_DELAY);
 
@@ -453,7 +479,7 @@ void runTest()
   registerTest(testCurrent("3.3", 1.10, 1.35));
   turnOFFRelay(B_MID_OFF_RELAY);
 
-  registerTest(testChargingLampOff(photoResistorStart));
+  registerTest(testChargedLampOff(photoResistorStart));
 
   delay(MEASURE_POINT_DELAY);
 
